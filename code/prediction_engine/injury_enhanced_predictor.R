@@ -19,9 +19,9 @@ load_all_prediction_data <- function() {
   if (file.exists("data/team_metrics_2025.csv")) {
     team_metrics <- read_csv("data/team_metrics_2025.csv", show_col_types = FALSE)
   } else {
-    cat("Creating team metrics...\n")
-    source("code/data_enhancement/current_season_pipeline.R")
-    team_metrics <- create_2025_prediction_data()
+    cat("Creating team metrics with updated weighting...\n")
+    source("code/data_enhancement/live_2025_pipeline.R")
+    team_metrics <- create_live_2025_prediction_data()
   }
   
   # Load player impact database

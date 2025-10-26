@@ -15,9 +15,9 @@ load_prediction_data <- function() {
   
   # Check if we have the 2025 team metrics
   if (!file.exists("data/team_metrics_2025.csv")) {
-    cat("Creating 2025 team metrics...\n")
-    source("code/data_enhancement/current_season_pipeline.R")
-    team_metrics <- create_2025_prediction_data()
+    cat("Creating 2025 team metrics with updated weighting...\n")
+    source("code/data_enhancement/live_2025_pipeline.R")
+    team_metrics <- create_live_2025_prediction_data()
   } else {
     team_metrics <- read_csv("data/team_metrics_2025.csv", show_col_types = FALSE)
   }

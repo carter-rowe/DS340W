@@ -20,26 +20,27 @@ get_live_2025_season_data <- function() {
   cat(sprintf("🎮 Games played so far: %d\n", current_games))
   
   # Dynamic weighting based on how much 2025 data we have
+  # UPDATED: Higher bias toward current 2025 season for better recency
   if (current_week <= 4) {
-    # Early season: Heavy weight on 2024, moderate weight on 2025 games
+    # Early season: Strong bias toward current 2025 games
     seasons <- c(2023, 2024, 2025)
-    weights <- c(0.15, 0.65, 0.20)  # 2025 gets 20% weight
-    cat("📊 Early season weighting: 2023(15%), 2024(65%), 2025(20%)\n")
+    weights <- c(0.10, 0.50, 0.40)  # 2025 gets 40% weight (was 20%)
+    cat("📊 Early season weighting: 2023(10%), 2024(50%), 2025(40%)\n")
   } else if (current_week <= 8) {
-    # Mid-early season: Increasing 2025 weight
+    # Mid-early season: 2025 becomes primary data source
     seasons <- c(2023, 2024, 2025)
-    weights <- c(0.10, 0.50, 0.40)  # 2025 gets 40% weight
-    cat("📊 Mid-early season weighting: 2023(10%), 2024(50%), 2025(40%)\n")
+    weights <- c(0.05, 0.35, 0.60)  # 2025 gets 60% weight (was 40%)
+    cat("📊 Mid-early season weighting: 2023(5%), 2024(35%), 2025(60%)\n")
   } else if (current_week <= 12) {
-    # Mid season: 2025 becomes primary
+    # Mid season: 2025 heavily dominates
     seasons <- c(2024, 2025)
-    weights <- c(0.35, 0.65)  # 2025 gets 65% weight
-    cat("📊 Mid season weighting: 2024(35%), 2025(65%)\n")
+    weights <- c(0.25, 0.75)  # 2025 gets 75% weight (was 65%)
+    cat("📊 Mid season weighting: 2024(25%), 2025(75%)\n")
   } else {
-    # Late season: 2025 dominates
+    # Late season: 2025 almost exclusively used
     seasons <- c(2024, 2025)
-    weights <- c(0.20, 0.80)  # 2025 gets 80% weight
-    cat("📊 Late season weighting: 2024(20%), 2025(80%)\n")
+    weights <- c(0.15, 0.85)  # 2025 gets 85% weight (was 80%)
+    cat("📊 Late season weighting: 2024(15%), 2025(85%)\n")
   }
   
   all_data <- list()
@@ -56,8 +57,12 @@ get_live_2025_season_data <- function() {
     
     # For 2025, only use regular season games (no future playoff data)
     if (season == 2025) {
-      pbp <- pbp %>% filter(season_type == "REG")
-      schedules <- schedules %>% filter(season_type == "REG")
+      if ("season_type" %in% names(pbp)) {
+        pbp <- pbp %>% filter(season_type == "REG")
+      }
+      if ("season_type" %in% names(schedules)) {
+        schedules <- schedules %>% filter(season_type == "REG")
+      }
     }
     
     # Calculate team metrics for this season
