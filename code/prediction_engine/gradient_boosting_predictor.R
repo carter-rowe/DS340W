@@ -9,6 +9,11 @@ library(DT)
 library(plotly)
 library(ggplot2)
 
+# Load injury system components
+if (file.exists("code/injury_system/injury_integration.R")) {
+  source("code/injury_system/injury_integration.R")
+}
+
 # Gradient Boosting NFL Prediction Model
 # XGBoost-based predictor using 2024-2025 season data
 
@@ -444,6 +449,59 @@ get_feature_impacts <- function(game_features, importance_df) {
   return(impacts[1:min(3, length(impacts))])  # Return top 3 non-zero impacts
 }
 
+# Calculate injury impact for a single team (helper function)
+calculate_team_injury_impact_xgb <- function(team, injury_data) {
+  if (is.null(injury_data) || !is.data.frame(injury_data) || nrow(injury_data) == 0) return(0)
+  
+  # Check for required columns
+  required_cols <- c("team", "position", "participation_probability", "effectiveness_when_playing")
+  if (!all(required_cols %in% names(injury_data))) return(0)
+  
+  # Position impact weights for XGBoost model
+  position_weights <- list(
+    "QB" = 8.0,
+    "RB" = 3.0,
+    "WR" = 2.5,
+    "TE" = 2.0,
+    "OL" = 4.0,
+    "DL" = 3.5,
+    "LB" = 3.0,
+    "CB" = 2.5,
+    "S" = 2.0,
+    "K" = 1.0,
+    "P" = 0.5
+  )
+  
+  team_injuries <- injury_data[injury_data$team == team & !is.na(injury_data$team), ]
+  
+  if (nrow(team_injuries) == 0) return(0)
+  
+  team_impact <- 0
+  
+  for (i in 1:nrow(team_injuries)) {
+    injury <- team_injuries[i, ]
+    
+    # Skip if missing required data
+    if (is.na(injury$position) || is.na(injury$participation_probability) || is.na(injury$effectiveness_when_playing)) {
+      next
+    }
+    
+    # Get position weight
+    pos_weight <- ifelse(injury$position %in% names(position_weights),
+                        position_weights[[injury$position]], 2.0)
+    
+    # Calculate impact based on participation probability and effectiveness
+    participation_loss <- max(0, min(1, 1 - as.numeric(injury$participation_probability)))
+    effectiveness_loss <- max(0, min(1, 1 - as.numeric(injury$effectiveness_when_playing)))
+    
+    # Total impact
+    player_impact <- pos_weight * (participation_loss + effectiveness_loss * 0.5)
+    team_impact <- team_impact + player_impact
+  }
+  
+  return(team_impact)
+}
+
 # Calculate injury impact for XGBoost model
 calculate_injury_impact_xgb <- function(home_team, away_team, injury_data) {
 
@@ -688,6 +746,15 @@ ui <- dashboardPage(
           )
         ),
         
+        # Injury Impact Analysis
+        fluidRow(
+          box(
+            title = "🏥 Injury Impact Analysis", 
+            status = "warning", solidHeader = TRUE, width = 12,
+            uiOutput("injury_impact_summary")
+          )
+        ),
+        
         # Detailed Analysis
         fluidRow(
           box(
@@ -816,17 +883,92 @@ server <- function(input, output, session) {
     
     # Prepare injury data if requested
     injury_data <- NULL
-    if (input$include_injuries && exists("get_current_injuries")) {
+    injury_analysis <- NULL
+    
+    if (input$include_injuries) {
+      # Try to load injury data
       tryCatch({
-        injury_data <- get_current_injuries()
+        if (exists("get_current_injuries")) {
+          injury_data <- get_current_injuries()
+        } else if (exists("create_example_injuries")) {
+          injury_data <- create_example_injuries()
+        }
       }, error = function(e) {
-        # Use empty injury data if can't load
-        injury_data <- NULL
+        # Try to use example injuries as fallback
+        if (exists("create_example_injuries")) {
+          injury_data <<- create_example_injuries()
+        } else {
+          injury_data <<- NULL
+        }
       })
+      
+      # Calculate injury impacts if we have injury data and the function exists
+      if (!is.null(injury_data) && exists("calculate_team_injury_impact_xgb")) {
+        # Calculate individual team impacts
+        home_injury_impact <- calculate_team_injury_impact_xgb(input$home_team, injury_data)
+        away_injury_impact <- calculate_team_injury_impact_xgb(input$away_team, injury_data)
+        
+        # Calculate net advantage (positive favors home team)
+        net_advantage <- away_injury_impact - home_injury_impact
+        
+        # Create injury impact summary objects (simplified for display)
+        if (exists("calculate_team_injury_impact") && exists("get_current_injuries")) {
+          # Use full injury integration system if available
+          tryCatch({
+            if (file.exists("data/player_impact_database.csv") && exists("calculate_team_injury_impact")) {
+              player_db <- read_csv("data/player_impact_database.csv", show_col_types = FALSE)
+              home_impact <- calculate_team_injury_impact(input$home_team, injury_data, player_db)
+              away_impact <- calculate_team_injury_impact(input$away_team, injury_data, player_db)
+              
+              injury_analysis <- list(
+                home_team_injuries = home_impact,
+                away_team_injuries = away_impact,
+                net_injury_advantage = net_advantage
+              )
+            }
+          }, error = function(e) {
+            # Create simplified injury analysis if full system not available
+            home_injury_count <- sum(injury_data$team == input$home_team & injury_data$participation_probability < 1.0, na.rm = TRUE)
+            away_injury_count <- sum(injury_data$team == input$away_team & injury_data$participation_probability < 1.0, na.rm = TRUE)
+            
+            injury_analysis <- list(
+              home_team_injuries = list(
+                total_epa_impact = abs(home_injury_impact),
+                injured_players = list(),
+                total_players_affected = home_injury_count
+              ),
+              away_team_injuries = list(
+                total_epa_impact = abs(away_injury_impact),
+                injured_players = list(),
+                total_players_affected = away_injury_count
+              ),
+              net_injury_advantage = home_injury_impact - away_injury_impact
+            )
+          })
+        } else {
+          # Create simplified injury analysis
+          home_injury_count <- sum(injury_data$team == input$home_team & injury_data$participation_probability < 1.0, na.rm = TRUE)
+          away_injury_count <- sum(injury_data$team == input$away_team & injury_data$participation_probability < 1.0, na.rm = TRUE)
+          
+          injury_analysis <- list(
+            home_team_injuries = list(
+              total_epa_impact = abs(home_injury_impact),
+              injured_players = list(),
+              total_players_affected = home_injury_count
+            ),
+            away_team_injuries = list(
+              total_epa_impact = abs(away_injury_impact),
+              injured_players = list(),
+              total_players_affected = away_injury_count
+            ),
+            net_injury_advantage = home_injury_impact - away_injury_impact
+          )
+        }
+      }
     }
     
     # Make prediction
-    tryCatch({
+    result <- tryCatch({
       predict_xgboost_game(
         input$home_team, 
         input$away_team, 
@@ -837,6 +979,13 @@ server <- function(input, output, session) {
     }, error = function(e) {
       return(list(error = paste("Prediction error:", e$message)))
     })
+    
+    # Add injury analysis to result if available
+    if (!is.null(injury_analysis)) {
+      result$injury_analysis <- injury_analysis
+    }
+    
+    return(result)
   })
   
   # Prediction results UI
@@ -914,6 +1063,88 @@ server <- function(input, output, session) {
         )
       }
     )
+  })
+  
+  # Injury impact summary
+  output$injury_impact_summary <- renderUI({
+    if (input$predict == 0 || !input$include_injuries) {
+      return(p("Enable injury analysis and predict a game to see injury impacts."))
+    }
+    
+    result <- prediction_result()
+    
+    if (is.null(result$injury_analysis)) {
+      return(p("No injury analysis available for this prediction. Injury data may not be loaded."))
+    }
+    
+    injury_data_list <- result$injury_analysis
+    
+    # Check if we have the create_injury_summary function
+    if (exists("create_injury_summary")) {
+      # Use the full injury summary function
+      home_summary <- tryCatch({
+        create_injury_summary(input$home_team, injury_data_list$home_team_injuries)
+      }, error = function(e) {
+        paste("🏥", input$home_team, "Injury Report:",
+              paste(injury_data_list$home_team_injuries$total_players_affected, "players affected"))
+      })
+      
+      away_summary <- tryCatch({
+        create_injury_summary(input$away_team, injury_data_list$away_team_injuries)
+      }, error = function(e) {
+        paste("🏥", input$away_team, "Injury Report:",
+              paste(injury_data_list$away_team_injuries$total_players_affected, "players affected"))
+      })
+      
+      div(
+        h4("📋 Injury Report Summary:"),
+        tags$pre(home_summary, style = "background: #f8f9fa; padding: 10px; border-radius: 5px;"),
+        tags$pre(away_summary, style = "background: #f8f9fa; padding: 10px; border-radius: 5px;"),
+        
+        if (abs(injury_data_list$net_injury_advantage) > 0.5) {
+          div(
+            style = "background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 10px;",
+            h5("⚡ Injury Impact:"),
+            p(sprintf("Net advantage: %+.1f points toward %s due to injury differences", 
+                     abs(injury_data_list$net_injury_advantage),
+                     ifelse(injury_data_list$net_injury_advantage > 0, input$home_team, input$away_team)))
+          )
+        } else {
+          div(
+            style = "background: #d1edff; padding: 10px; border-radius: 5px; margin-top: 10px;",
+            p("✅ Minimal injury impact - both teams relatively healthy")
+          )
+        }
+      )
+    } else {
+      # Simple fallback display
+      div(
+        h4("📋 Injury Report Summary:"),
+        p(sprintf("🏥 %s: %d players affected (Impact: %.2f)", 
+                 input$home_team, 
+                 injury_data_list$home_team_injuries$total_players_affected,
+                 injury_data_list$home_team_injuries$total_epa_impact)),
+        p(sprintf("🏥 %s: %d players affected (Impact: %.2f)", 
+                 input$away_team, 
+                 injury_data_list$away_team_injuries$total_players_affected,
+                 injury_data_list$away_team_injuries$total_epa_impact)),
+        
+        if (abs(injury_data_list$net_injury_advantage) > 0.5) {
+          div(
+            style = "background: #fff3cd; padding: 10px; border-radius: 5px; margin-top: 10px;",
+            h5("⚡ Injury Impact:"),
+            p(sprintf("Net advantage: %+.1f points toward %s due to injury differences", 
+                     abs(injury_data_list$net_injury_advantage),
+                     ifelse(injury_data_list$net_injury_advantage > 0, input$home_team, input$away_team)))
+          )
+        } else {
+          div(
+            style = "background: #d1edff; padding: 10px; border-radius: 5px; margin-top: 10px;",
+            p("✅ Minimal injury impact - both teams relatively healthy")
+          )
+        }
+      )
+    }
   })
   
   # Detailed comparison table
